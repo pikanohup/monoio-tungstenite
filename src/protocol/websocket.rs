@@ -202,6 +202,21 @@ where
         &self.config
     }
 
+    /// Returns a shared reference to the underlying stream.
+    pub fn get_ref(&self) -> &S {
+        self.frame_codec.get_ref()
+    }
+
+    /// Returns a mutable reference to the underlying stream.
+    pub fn get_mut(&mut self) -> &mut S {
+        self.frame_codec.get_mut()
+    }
+
+    /// Consumes the WebSocket and returns the underlying stream.
+    pub fn into_inner(self) -> S {
+        self.frame_codec.into_inner()
+    }
+
     /// Checks if it is possible to read messages.
     ///
     /// Reading is impossible after receiving `Message::Close`. It is still possible after

@@ -38,9 +38,42 @@ impl<IO, Codec> FramedWrite<IO, Codec> {
         self.backpressure = backpressure;
     }
 
+    /// Consumes the `FramedWrite` and returns the underlying I/O stream.
+    #[inline]
+    pub fn into_inner(self) -> IO {
+        self.io
+    }
+
+    /// Returns a reference to the underlying I/O stream.
+    #[inline]
+    pub fn get_ref(&self) -> &IO {
+        &self.io
+    }
+
+    /// Returns a mutable reference to the underlying I/O stream.
+    #[inline]
+    pub fn get_mut(&mut self) -> &mut IO {
+        &mut self.io
+    }
+
+    /// Returns a reference to the underlying encoder.
+    pub fn encoder(&self) -> &Codec {
+        &self.codec
+    }
+
     /// Returns a mutable reference to the underlying encoder.
     pub fn encoder_mut(&mut self) -> &mut Codec {
         &mut self.codec
+    }
+
+    /// Returns a reference to the write buffer.
+    pub fn write_buffer(&self) -> &BytesMut {
+        &self.buf
+    }
+
+    /// Returns a mutable reference to the write buffer.
+    pub fn write_buffer_mut(&mut self) -> &mut BytesMut {
+        &mut self.buf
     }
 
     /// Equivalent to [`Sink::send`] but with custom codec.
@@ -136,14 +169,47 @@ impl<IO, Dec, Enc> Framed<IO, Dec, Enc> {
         Self { inner }
     }
 
+    /// Consumes the `Framed` and returns the underlying I/O stream.
+    pub fn into_inner(self) -> IO {
+        self.inner.into_inner().into_inner()
+    }
+
+    /// Returns a reference to the underlying decoder.
+    pub fn decoder(&self) -> &Dec {
+        self.inner.decoder()
+    }
+
     /// Returns a mutable reference to the underlying decoder.
     pub fn decoder_mut(&mut self) -> &mut Dec {
         self.inner.decoder_mut()
     }
 
+    /// Returns a reference to the underlying encoder.
+    pub fn encoder(&self) -> &Enc {
+        self.framed_write().encoder()
+    }
+
     /// Returns a mutable reference to the underlying encoder.
     pub fn encoder_mut(&mut self) -> &mut Enc {
         self.framed_write_mut().encoder_mut()
+    }
+
+    /// Returns a reference to the underlying I/O stream.
+    #[inline]
+    pub fn get_ref(&self) -> &IO {
+        self.framed_write().get_ref()
+    }
+
+    /// Returns a mutable reference to the underlying I/O stream.
+    #[inline]
+    pub fn get_mut(&mut self) -> &mut IO {
+        self.framed_write_mut().get_mut()
+    }
+
+    /// Returns a reference to the inner `FramedWrite`.
+    #[inline]
+    pub fn framed_write(&self) -> &FramedWrite<IO, Enc> {
+        self.inner.get_ref()
     }
 
     /// Returns a mutable reference to the inner `FramedWrite`.
@@ -174,7 +240,7 @@ impl<IO, Dec, Enc> Framed<IO, Dec, Enc> {
         self.inner.next_with(codec).await
     }
 
-    /// Equivalent to Sink::send but with custom codec.
+    /// Equivalent to [`Sink::send`] but with custom codec.
     #[inline]
     pub async fn send_with<C, Item>(&mut self, codec: &mut C, item: Item) -> Result<(), C::Error>
     where
