@@ -24,16 +24,51 @@ pub async fn connect<R: IntoClientRequest>(
     connect_with_config(request, None, false).await
 }
 
-/// The same as [`connect`] but the one can specify a websocket configuration. `disable_nagle`
-/// specifies if the Nagle's algorithm must be disabled, i.e. `set_nodelay(true)`. If you don't know
-/// what the Nagle's algorithm is, better leave it set to `false`.
+/// The same as [`connect`] but the one can specify a websocket configuration.
+///
+/// `disable_nagle` specifies if the Nagle's algorithm must be disabled, i.e. `set_nodelay(true)`.
+/// If you don't know what the Nagle's algorithm is, better leave it set to `false`.
 pub async fn connect_with_config<R: IntoClientRequest>(
     request: R,
     config: Option<WebSocketConfig>,
     disable_nagle: bool,
 ) -> Result<(WebSocket<MaybeTlsStream<TcpStream>>, Response)> {
     let request = request.into_client_request()?;
+    let stream = perpare_tcp_stream(&request, disable_nagle).await?;
+
+    #[cfg(not(any(feature = "native-tls", feature = "rustls-tls")))]
+    let client = client_with_config(request, MaybeTlsStream::Plain(stream), config).await;
+    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+    let client = crate::tls::client_tls_with_config(request, stream, config, None).await;
+
+    client
+}
+
+/// The same as [`connect`] but the one can specify a websocket configuration,
+/// and a TLS connector to use.
+///
+/// `disable_nagle` specifies if the Nagle's algorithm must be disabled, i.e. `set_nodelay(true)`.
+/// If you don't know what the Nagle's algorithm is, better leave it set to `false`.
+#[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+pub async fn connect_tls_with_config<R: IntoClientRequest>(
+    request: R,
+    config: Option<WebSocketConfig>,
+    disable_nagle: bool,
+    connector: Option<crate::tls::Connector>,
+) -> Result<(WebSocket<MaybeTlsStream<TcpStream>>, Response)> {
+    let request = request.into_client_request()?;
+    let stream = perpare_tcp_stream(&request, disable_nagle).await?;
+    crate::tls::client_tls_with_config(request, stream, config, connector).await
+}
+
+async fn perpare_tcp_stream(request: &Request, disable_nagle: bool) -> Result<TcpStream> {
     let uri = request.uri();
+    let mode = uri_mode(uri)?;
+
+    #[cfg(not(any(feature = "native-tls", feature = "rustls-tls")))]
+    if let Mode::Tls = mode {
+        return Err(Error::Url(UrlError::TlsFeatureNotEnabled));
+    }
 
     let host = match uri.host() {
         Some(d) if d.starts_with('[') && d.ends_with(']') => d[1..d.len() - 1].to_string(),
@@ -41,7 +76,7 @@ pub async fn connect_with_config<R: IntoClientRequest>(
         None => return Err(Error::Url(UrlError::NoHostName)),
     };
 
-    let port = uri.port_u16().unwrap_or(match uri_mode(uri)? {
+    let port = uri.port_u16().unwrap_or(match mode {
         Mode::Plain => 80,
         Mode::Tls => 443,
     });
@@ -51,7 +86,7 @@ pub async fn connect_with_config<R: IntoClientRequest>(
         stream.set_nodelay(true)?;
     }
 
-    client_with_config(request, MaybeTlsStream::Plain(stream), config).await
+    Ok(stream)
 }
 
 /// Gets the mode of the given URL.

@@ -9,28 +9,35 @@
     unused_import_braces
 )]
 
-pub mod error;
-pub use error::{Error, Result};
-
-pub mod protocol;
-pub mod stream;
-
 #[cfg(feature = "handshake")]
 pub mod client;
+pub mod error;
+mod framed;
 #[cfg(feature = "handshake")]
 pub mod handshake;
+pub mod protocol;
 #[cfg(feature = "handshake")]
 pub mod server;
-
-// mod tls;
-mod framed;
+pub mod stream;
+#[cfg(all(
+    any(feature = "native-tls", feature = "rustls-tls"),
+    feature = "handshake"
+))]
+mod tls;
 
 // re-export bytes since used in `Message` API.
 pub use bytes::Bytes;
+pub use error::{Error, Result};
 #[cfg(feature = "handshake")]
 pub use http;
+pub use protocol::{Message, WebSocket, frame::Utf8Bytes};
+pub use stream::MaybeTlsStream;
+#[cfg(all(
+    any(feature = "native-tls", feature = "rustls-tls"),
+    feature = "handshake"
+))]
+pub use tls::{Connector, client_tls, client_tls_with_config};
 
-pub use crate::protocol::{Message, WebSocket, frame::Utf8Bytes};
 #[cfg(feature = "handshake")]
 pub use crate::{
     client::{ClientRequestBuilder, client, connect},

@@ -40,7 +40,18 @@ This crate offers a native WebSocket implementation for `monoio`, based on the w
 
 ## Features
 
-TODO: Add TLS support
+`monoio-tungstenite` provides a complete implementation of the WebSocket specification. TLS is supported on all platforms using [`native-tls`](https://github.com/sfackler/rust-native-tls) or [`rustls`](https://github.com/ctz/rustls) . The following features are available:
+
+* `native-tls`
+* `native-tls-vendored`
+* `rustls-tls-native-roots`
+* `rustls-tls-webpki-roots`
+
+Choose the one that is appropriate for your needs.
+
+By default **no TLS feature is activated**, so make sure you use one of the TLS features, otherwise you won't be able to communicate with the TLS endpoints.
+
+Please note that `permessage-deflate` is not supported at this time.
 
 ## Testing
 

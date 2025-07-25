@@ -44,8 +44,8 @@ pub enum Error {
     ///
     /// Note that this error variant is enabled unconditionally even if no TLS feature is enabled,
     /// to provide a feature-agnostic API surface.
-    // #[error("TLS error: {0}")]
-    // Tls(#[from] TlsError),
+    #[error("TLS error: {0}")]
+    Tls(#[from] TlsError),
     /// - When reading: buffer capacity exhausted.
     /// - When writing: your message is bigger than the configured max message size (64MB by
     ///   default).
@@ -274,4 +274,41 @@ pub enum UrlError {
     /// The URL does not include a path/query.
     #[error("No path/query in URL")]
     NoPathOrQuery,
+}
+
+/// TLS errors.
+///
+/// Note that even if you enable only the rustls-based TLS support, the error at runtime could still
+/// be `Native`, as another crate in the dependency graph may enable native TLS support.
+#[derive(Error, Debug)]
+#[non_exhaustive]
+pub enum TlsError {
+    /// Native TLS error.
+    // boxed to reduce the size of the error type
+    #[cfg(feature = "native-tls")]
+    #[error("native-tls error: {0}")]
+    Native(Box<monoio_native_tls::TlsError>),
+    /// Rustls error.
+    // boxed to reduce the size of the error type
+    #[cfg(feature = "rustls-tls")]
+    #[error("rustls error: {0}")]
+    Rustls(Box<monoio_rustls::TlsError>),
+    /// DNS name resolution error.
+    #[cfg(feature = "rustls-tls")]
+    #[error("Invalid DNS name")]
+    InvalidDnsName,
+}
+
+#[cfg(feature = "native-tls")]
+impl From<monoio_native_tls::TlsError> for TlsError {
+    fn from(e: monoio_native_tls::TlsError) -> Self {
+        Self::Native(Box::new(e))
+    }
+}
+
+#[cfg(feature = "rustls-tls")]
+impl From<monoio_rustls::TlsError> for TlsError {
+    fn from(e: monoio_rustls::TlsError) -> Self {
+        Self::Rustls(Box::new(e))
+    }
 }
