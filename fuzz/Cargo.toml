@@ -1,0 +1,30 @@
+[package]
+name = "monoio-tungstenite-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+monoio = "0.2.4"
+
+[dependencies.monoio-tungstenite]
+path = ".."
+
+[[bin]]
+name = "parse_frame_header"
+path = "fuzz_targets/parse_frame_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "read_message_server"
+path = "fuzz_targets/read_message_server.rs"
+
+[[bin]]
+name = "read_message_client"
+path = "fuzz_targets/read_message_client.rs"
