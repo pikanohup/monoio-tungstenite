@@ -6,15 +6,16 @@ SOURCE_DIR=$(readlink -f "${BASH_SOURCE[0]}")
 SOURCE_DIR=$(dirname "$SOURCE_DIR")
 cd "${SOURCE_DIR}/.."
 
+CONTAINER_NAME=fuzzingserver
 function cleanup() {
-    kill -9 ${WSSERVER_PID}
+    docker container stop "${CONTAINER_NAME}"
 }
 trap cleanup TERM EXIT
 
 function test_diff() {
     if ! diff -q \
         <(jq -S 'del(."Tungstenite" | .. | .duration?)' 'autobahn/expected-results.json') \
-        <(jq -S 'del(."Tungstenite" | .. | .duration?)' 'autobahn/server/index.json')
+        <(jq -S 'del(."Tungstenite" | .. | .duration?)' 'autobahn/client/index.json')
     then
         echo 'Difference in results, either this is a regression or' \
              'one should update autobahn/expected-results.json with the new results.'
@@ -22,13 +23,14 @@ function test_diff() {
     fi
 }
 
-cargo run --release --example autobahn-server & WSSERVER_PID=$!
-sleep 5
-
-docker run --rm \
+docker run -d --rm \
     -v "${PWD}/autobahn:/autobahn" \
-    --network host \
+    -p 9001:9001 \
+    --init \
+    --name "${CONTAINER_NAME}" \
     crossbario/autobahn-testsuite \
-    wstest -m fuzzingclient -s 'autobahn/fuzzingclient.json'
+    wstest -m fuzzingserver -s 'autobahn/fuzzingserver.json'
 
+sleep 5
+cargo run --release --example autobahn_client
 test_diff

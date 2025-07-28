@@ -61,21 +61,21 @@ name = "server"
 required-features = ["handshake"]
 
 [[example]]
-name = "autobahn-client"
+name = "autobahn_client"
 required-features = ["handshake"]
 
 [[example]]
-name = "autobahn-server"
+name = "autobahn_server"
 required-features = ["handshake"]
 
 [[example]]
-name = "callback-error"
+name = "callback_error"
 required-features = ["handshake"]
 
 [[example]]
-name = "interval-server"
+name = "interval_server"
 required-features = ["handshake"]
 
 [[example]]
-name = "srv-accept-unmasked-frames"
+name = "srv_accept_unmasked_frames"
 required-features = ["handshake"]

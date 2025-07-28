@@ -74,8 +74,8 @@ jobs:
           toolchain: ${{ matrix.rust }}
 
       - name: Running Autobahn TestSuite for client
-        run: ./scripts/autobahn-client.sh
+        run: ./scripts/autobahn_client.sh
 
       - name: Running Autobahn TestSuite for server
-        run: ./scripts/autobahn-server.sh
+        run: ./scripts/autobahn_server.sh
 
