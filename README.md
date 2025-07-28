@@ -34,6 +34,12 @@ For more examples, please refer to the `examples/` directory.
 > [!IMPORTANT]
 > This project was initially developed for personal use and has not been battle-tested in large-scale production environments. Please use it with caution, especially in production systems.
 
+[![Crates.io](https://img.shields.io/crates/v/monoio-tungstenite)](https://crates.io/crates/monoio-tungstenite)
+[![Docs.rs](https://img.shields.io/docsrs/monoio-tungstenite)](https://docs.rs/monoio-tungstenite)
+[![License](https://img.shields.io/crates/l/monoio-tungstenite)](LICENSE-MIT)
+[![Build Status](https://github.com/pikanohup/monoio-tungstenite/actions/workflows/ci.yml/badge.svg)](https://github.com/pikanohup/monoio-tungstenite/actions)
+
+
 ## Introduction
 
 This crate offers a native WebSocket implementation for `monoio`, based on the widely-used and reliable `tungstenite-rs`. Instead of relying on [`IntoPollIo`](https://github.com/bytedance/monoio/blob/master/docs/en/poll-io.md) to simply wrap and reuse `tokio-tungstenite` or other poll-based libraries, it is built directly on `monoio`'s native IO model (`AsyncReadRent`/`AsyncWriteRent`), with the help of the `monoio-codec` crate.
