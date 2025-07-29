@@ -163,9 +163,9 @@ pub struct Framed<IO, Dec, Enc> {
 
 impl<IO, Dec, Enc> Framed<IO, Dec, Enc> {
     /// Creates a new `Framed`.
-    pub fn new(io: IO, dec: Dec, enc: Enc, capacity: usize, backpressure: usize) -> Self {
+    pub fn new(io: IO, dec: Dec, enc: Enc, backpressure: usize) -> Self {
         let framed_write = FramedWrite::new(io, enc, backpressure);
-        let inner = FramedRead::with_capacity(framed_write, dec, capacity);
+        let inner = FramedRead::with_capacity(framed_write, dec, 8192);
         Self { inner }
     }
 

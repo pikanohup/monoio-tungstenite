@@ -62,7 +62,6 @@ where
         stream,
         FrameDecoder::new(config.max_frame_size, false, config.accept_unmasked_frames),
         FrameEncoder,
-        config.initial_read_capacity,
         config.write_buffer_size,
     );
 
@@ -83,7 +82,7 @@ where
                 Err(e) => return Err(e),
             };
 
-            let ws = WebSocket::from_existing_frame_codec(framed, Role::Client, config);
+            let ws = WebSocket::from_frame_codec(framed, Role::Client, config);
             Ok((ws, resp))
         }
 

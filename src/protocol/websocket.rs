@@ -25,11 +25,6 @@ pub enum Role {
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct WebSocketConfig {
-    /// The initial capacity of the read buffer. This buffer is pre-allocated and can hold at least
-    /// the specified number of bytes without requiring reallocation.
-    ///
-    /// The default value is 128 KiB.
-    pub initial_read_capacity: usize,
     /// The target minimum size of the write buffer to reach before writing the data to the
     /// underlying stream.
     ///
@@ -66,7 +61,6 @@ pub struct WebSocketConfig {
 impl Default for WebSocketConfig {
     fn default() -> Self {
         Self {
-            initial_read_capacity: 128 * 1024,
             write_buffer_size: 128 * 1024,
             max_message_size: Some(64 << 20),
             max_frame_size: Some(16 << 20),
@@ -76,12 +70,6 @@ impl Default for WebSocketConfig {
 }
 
 impl WebSocketConfig {
-    /// Sets [`Self::initial_read_capacity`].
-    pub fn initial_read_capacity(mut self, initial_read_capacity: usize) -> Self {
-        self.initial_read_capacity = initial_read_capacity;
-        self
-    }
-
     /// Sets [`Self::write_buffer_size`].
     pub fn write_buffer_size(mut self, write_buffer_size: usize) -> Self {
         self.write_buffer_size = write_buffer_size;
@@ -148,7 +136,6 @@ where
                 config.accept_unmasked_frames,
             ),
             FrameEncoder,
-            config.initial_read_capacity,
             config.write_buffer_size,
         );
 
@@ -168,7 +155,7 @@ where
     //
     // todo: pub api, +setup frame_codec
     #[cfg(feature = "handshake")]
-    pub(crate) fn from_existing_frame_codec(
+    pub(crate) fn from_frame_codec(
         frame_codec: FrameCodec<S>,
         role: Role,
         config: WebSocketConfig,

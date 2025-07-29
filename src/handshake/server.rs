@@ -46,7 +46,6 @@ where
         stream,
         FrameDecoder::new(config.max_frame_size, true, config.accept_unmasked_frames),
         FrameEncoder,
-        config.initial_read_capacity,
         config.write_buffer_size,
     );
 
@@ -63,11 +62,7 @@ where
                     framed.flush().await?;
 
                     framed.read_buffer_mut().clear();
-                    Ok(WebSocket::from_existing_frame_codec(
-                        framed,
-                        Role::Server,
-                        config,
-                    ))
+                    Ok(WebSocket::from_frame_codec(framed, Role::Server, config))
                 }
 
                 Err(resp) => {
