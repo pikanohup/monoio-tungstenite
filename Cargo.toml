@@ -1,6 +1,6 @@
 [package]
 name = "monoio-tungstenite"
-version = "0.1.0"
+version = "0.2.0"
 description = "Asynchronous WebSocket implementation for monoio runtime, adapted from tungstenite."
 edition = "2024"
 authors = ["pikanohup <hooraypikachu@gmail.com>"]
