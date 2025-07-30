@@ -1,12 +1,12 @@
 //! Error handling.
 
-use std::{io, result, str, string};
+use std::{io, result};
 
 #[cfg(feature = "handshake")]
 use http::{Response, header::HeaderName};
 use thiserror::Error;
 
-use crate::protocol::{Message, frame::coding::Data};
+use crate::protocol::frame::coding::Data;
 
 /// Result type of all Tungstenite library calls.
 pub type Result<T, E = Error> = result::Result<T, E>;
@@ -54,9 +54,6 @@ pub enum Error {
     /// Protocol violation.
     #[error("WebSocket protocol error: {0}")]
     Protocol(#[from] ProtocolError),
-    /// Message write buffer is full.
-    #[error("Write buffer is full")]
-    WriteBufferFull(Message),
     /// UTF coding error.
     #[error("UTF-8 encoding error: {0}")]
     Utf8(String),
@@ -74,14 +71,8 @@ pub enum Error {
     HttpFormat(#[from] http::Error),
 }
 
-impl From<str::Utf8Error> for Error {
-    fn from(err: str::Utf8Error) -> Self {
-        Error::Utf8(err.to_string())
-    }
-}
-
-impl From<string::FromUtf8Error> for Error {
-    fn from(err: string::FromUtf8Error) -> Self {
+impl From<simdutf8::basic::Utf8Error> for Error {
+    fn from(err: simdutf8::basic::Utf8Error) -> Self {
         Error::Utf8(err.to_string())
     }
 }

@@ -1,3 +1,5 @@
+//! TLS support for WebSocket connections.
+
 use monoio::io::{AsyncReadRent, AsyncWriteRent};
 
 use crate::{

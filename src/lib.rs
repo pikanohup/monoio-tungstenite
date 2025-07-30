@@ -23,7 +23,7 @@ pub mod stream;
     any(feature = "native-tls", feature = "rustls-tls"),
     feature = "handshake"
 ))]
-mod tls;
+pub mod tls;
 
 // re-export bytes since used in `Message` API.
 pub use bytes::Bytes;
@@ -37,9 +37,8 @@ pub use stream::MaybeTlsStream;
     feature = "handshake"
 ))]
 pub use tls::{Connector, client_tls, client_tls_with_config};
-
 #[cfg(feature = "handshake")]
-pub use crate::{
+pub use {
     client::{ClientRequestBuilder, client, connect},
     handshake::client::client_handshake,
     handshake::server::server_handshake,

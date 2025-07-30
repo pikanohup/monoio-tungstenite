@@ -1,4 +1,4 @@
-use std::{fmt, result::Result as StdResult, str};
+use std::fmt;
 
 use super::frame::{CloseFrame, Frame};
 use crate::{
@@ -7,71 +7,73 @@ use crate::{
 };
 
 mod string_collect {
-    use utf8::DecodeError;
+    use crate::{
+        error::{Error, Result},
+        protocol::frame::utf8::Incomplete,
+    };
 
-    use crate::error::{Error, Result};
-
+    // modified from https://github.com/SimonSapin/rust-utf8/blob/218fea2b57b0e4c3de9fa17a376fcc4a4c0d08f3/src/lossy.rs
     #[derive(Debug)]
     pub struct StringCollector {
         data: String,
-        incomplete: Option<utf8::Incomplete>,
+        incomplete: Incomplete,
     }
 
     impl StringCollector {
         pub fn new() -> Self {
             StringCollector {
                 data: String::new(),
-                incomplete: None,
+                incomplete: Incomplete::new(),
             }
         }
 
         pub fn len(&self) -> usize {
-            self.data
-                .len()
-                .saturating_add(self.incomplete.map(|i| i.buffer_len as usize).unwrap_or(0))
+            self.data.len().saturating_add(self.incomplete.len())
         }
 
         pub fn extend<T: AsRef<[u8]>>(&mut self, tail: T) -> Result<()> {
             let mut input: &[u8] = tail.as_ref();
 
-            if let Some(mut incomplete) = self.incomplete.take() {
-                if let Some((result, rest)) = incomplete.try_complete(input) {
-                    input = rest;
-                    match result {
-                        Ok(text) => self.data.push_str(text),
-                        Err(result_bytes) => {
-                            return Err(Error::Utf8(String::from_utf8_lossy(result_bytes).into()));
-                        }
+            if !self.incomplete.is_empty() {
+                match self.incomplete.try_complete(input) {
+                    Some((Ok(text), rest)) => {
+                        self.data.push_str(text);
+                        input = rest;
                     }
-                } else {
-                    input = &[];
-                    self.incomplete = Some(incomplete);
+
+                    Some((Err(result_bytes), _)) => {
+                        return Err(Error::Utf8(String::from_utf8_lossy(result_bytes).into()));
+                    }
+
+                    None => {
+                        return Ok(());
+                    }
                 }
             }
 
             if !input.is_empty() {
-                match utf8::decode(input) {
+                match simdutf8::compat::from_utf8(input) {
                     Ok(text) => {
                         self.data.push_str(text);
                         Ok(())
                     }
-                    Err(DecodeError::Incomplete {
-                        valid_prefix,
-                        incomplete_suffix,
-                    }) => {
-                        self.data.push_str(valid_prefix);
-                        self.incomplete = Some(incomplete_suffix);
-                        Ok(())
-                    }
-                    Err(DecodeError::Invalid {
-                        valid_prefix,
-                        invalid_sequence,
-                        ..
-                    }) => {
-                        self.data.push_str(valid_prefix);
-                        Err(Error::Utf8(
-                            String::from_utf8_lossy(invalid_sequence).into(),
-                        ))
+
+                    Err(error) => {
+                        let (valid, after_valid) = input.split_at(error.valid_up_to());
+                        let valid = unsafe { str::from_utf8_unchecked(valid) };
+                        self.data.push_str(valid);
+
+                        match error.error_len() {
+                            Some(invalid_sequence_length) => {
+                                let (invalid, _) = after_valid.split_at(invalid_sequence_length);
+                                Err(Error::Utf8(String::from_utf8_lossy(invalid).into()))
+                            }
+
+                            None => {
+                                self.incomplete = Incomplete::from_bytes(after_valid);
+                                Ok(())
+                            }
+                        }
                     }
                 }
             } else {
@@ -80,8 +82,11 @@ mod string_collect {
         }
 
         pub fn into_string(self) -> Result<String> {
-            if let Some(incomplete) = self.incomplete {
-                Err(Error::Utf8(format!("incomplete string: {incomplete:?}")))
+            if !self.incomplete.is_empty() {
+                Err(Error::Utf8(format!(
+                    "incomplete string: {:?}",
+                    self.incomplete
+                )))
             } else {
                 Ok(self.data)
             }
@@ -106,7 +111,7 @@ enum IncompleteMessageCollector {
 }
 
 impl IncompleteMessage {
-    /// Create new.
+    /// Creates a new `IncompleteMessage`.
     pub fn new(message_type: IncompleteMessageType) -> Self {
         IncompleteMessage {
             collector: match message_type {
@@ -118,7 +123,7 @@ impl IncompleteMessage {
         }
     }
 
-    /// Get the current filled size of the buffer.
+    /// Gets the current filled size of the buffer.
     pub fn len(&self) -> usize {
         match self.collector {
             IncompleteMessageCollector::Text(ref t) => t.len(),
@@ -126,7 +131,7 @@ impl IncompleteMessage {
         }
     }
 
-    /// Add more data to an existing message.
+    /// Adds more data to an existing message.
     pub fn extend<T: AsRef<[u8]>>(&mut self, tail: T, size_limit: Option<usize>) -> Result<()> {
         // Always have a max size. This ensures an error in case of concatenating two buffers
         // of more than `usize::max_value()` bytes in total.
@@ -150,7 +155,7 @@ impl IncompleteMessage {
         }
     }
 
-    /// Convert an incomplete message into a complete one.
+    /// Converts an incomplete message into a complete one.
     pub fn complete(self) -> Result<Message> {
         match self.collector {
             IncompleteMessageCollector::Binary(v) => Ok(Message::Binary(v.into())),
@@ -280,7 +285,7 @@ impl Message {
         match *self {
             Message::Text(ref string) => Ok(string.as_str()),
             Message::Binary(ref data) | Message::Ping(ref data) | Message::Pong(ref data) => {
-                Ok(str::from_utf8(data)?)
+                Ok(simdutf8::basic::from_utf8(data)?)
             }
             Message::Close(None) => Ok(""),
             Message::Close(Some(ref frame)) => Ok(&frame.reason),
@@ -331,7 +336,7 @@ impl From<Message> for Bytes {
 }
 
 impl fmt::Display for Message {
-    fn fmt(&self, f: &mut fmt::Formatter) -> StdResult<(), fmt::Error> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         if let Ok(string) = self.to_text() {
             write!(f, "{string}")
         } else {

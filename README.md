@@ -42,11 +42,11 @@ For more examples, please refer to the `examples/` directory.
 
 ## Introduction
 
-This crate offers a native WebSocket implementation for `monoio`, based on the widely-used and reliable `tungstenite-rs`. Instead of relying on [`IntoPollIo`](https://github.com/bytedance/monoio/blob/master/docs/en/poll-io.md) to simply wrap and reuse `tokio-tungstenite` or other poll-based libraries, it is built directly on `monoio`'s native IO model (`AsyncReadRent`/`AsyncWriteRent`), with the help of the `monoio-codec` crate.
+This crate offers a native WebSocket implementation for `monoio`, based on the widely-used and reliable `tungstenite-rs`. Instead of relying on [`IntoPollIo`](https://github.com/bytedance/monoio/blob/master/docs/en/poll-io.md) to simply wrap and reuse `tokio-tungstenite` or other poll-based libraries, it is built directly on `monoio`'s native IO model (`AsyncReadRent`/`AsyncWriteRent`), fully utilizing `io_uring`'s capabilities while ensuring seamless ecosystem integration.
 
 ## Features
 
-`monoio-tungstenite` provides a complete implementation of the WebSocket specification. TLS is supported on all platforms using [`native-tls`](https://github.com/sfackler/rust-native-tls) or [`rustls`](https://github.com/ctz/rustls) . The following features are available:
+`monoio-tungstenite` provides a complete implementation of the WebSocket specification. TLS is supported on all platforms using [`native-tls`](https://crates.io/crates/native-tls) or [`rustls`](https://crates.io/crates/rustls) . The following features are available:
 
 * `native-tls`
 * `native-tls-vendored`

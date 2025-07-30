@@ -3,12 +3,11 @@ use std::{
     fmt,
     io::{Cursor, ErrorKind, Read, Write},
     mem,
-    result::Result as StdResult,
-    str::Utf8Error,
     string::String,
 };
 
 use bytes::{Bytes, BytesMut};
+use simdutf8::basic::Utf8Error;
 
 use super::{
     coding::{CloseCode, Control, Data, OpCode},
@@ -264,7 +263,7 @@ impl Frame {
 
     /// Consumes the frame into its payload as string.
     #[inline]
-    pub fn into_text(self) -> StdResult<Utf8Bytes, Utf8Error> {
+    pub fn into_text(self) -> Result<Utf8Bytes, Utf8Error> {
         self.payload.try_into()
     }
 
@@ -277,7 +276,7 @@ impl Frame {
     /// Gets frame payload as `&str`.
     #[inline]
     pub fn to_text(&self) -> Result<&str, Utf8Error> {
-        std::str::from_utf8(&self.payload)
+        simdutf8::basic::from_utf8(&self.payload)
     }
 
     /// Consumes the frame into a closing frame.
