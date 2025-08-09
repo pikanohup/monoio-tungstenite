@@ -14,7 +14,7 @@ pub enum OpCode {
     Control(Control),
 }
 
-/// Data opcodes as in RFC 6455
+/// Data opcodes as in RFC 6455.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Data {
     /// 0x0 denotes a continuation frame
@@ -27,7 +27,7 @@ pub enum Data {
     Reserved(u8),
 }
 
-/// Control opcodes as in RFC 6455
+/// Control opcodes as in RFC 6455.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Control {
     /// 0x8 denotes a connection close

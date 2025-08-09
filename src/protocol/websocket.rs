@@ -1,11 +1,13 @@
 use monoio::io::{AsyncReadRent, AsyncWriteRent, sink::Sink, stream::Stream};
+// re-export FramedRead since it is used in `WebSocket::from_framed_read`
+pub use monoio_codec::FramedRead;
 
 use crate::{
     error::{CapacityError, Error, ProtocolError, Result},
     protocol::{
         frame::{
             CloseFrame, Frame, Utf8Bytes,
-            codec::{FrameCodec, FrameDecoder, FrameEncoder},
+            codec::FrameCodec,
             coding::{CloseCode, Control as OpCtl, Data as OpData, OpCode},
         },
         message::{IncompleteMessage, IncompleteMessageType, Message},
@@ -127,39 +129,35 @@ where
     /// Converts a raw socket into a WebSocket without performing a handshake.
     pub fn from_raw_socket(stream: S, role: Role, config: Option<WebSocketConfig>) -> Self {
         let config = config.unwrap_or_default();
-
-        let frame_codec = FrameCodec::new(
-            stream,
-            FrameDecoder::new(
-                config.max_frame_size,
-                matches!(role, Role::Server),
-                config.accept_unmasked_frames,
-            ),
-            FrameEncoder,
-            config.write_buffer_size,
-        );
-
-        Self {
-            role,
-            frame_codec,
-            state: WebSocketState::Active,
-            incomplete: None,
-            config,
-        }
+        let frame_codec = FrameCodec::new(stream, config.write_buffer_size);
+        Self::setup(frame_codec, role, config)
     }
 
-    /// Creates a [`WebSocket`] from an existing [`FrameCodec`].
+    /// Creates a [`WebSocket`] from an existing [`FramedRead`].
     ///
     /// This is typically used after a successful handshake, allowing to
-    /// reuse the frame codec that was already used for the handshake process.
-    //
-    // todo: pub api, +setup frame_codec
-    #[cfg(feature = "handshake")]
-    pub(crate) fn from_frame_codec(
-        frame_codec: FrameCodec<S>,
+    /// reuse the read buffer that was already used for the handshake process.
+    pub fn from_framed_read<C>(
+        framed_read: FramedRead<S, C>,
         role: Role,
-        config: WebSocketConfig,
+        config: Option<WebSocketConfig>,
     ) -> Self {
+        let config = config.unwrap_or_default();
+        let frame_codec = FrameCodec::from_framed_read(framed_read, config.write_buffer_size);
+        Self::setup(frame_codec, role, config)
+    }
+
+    fn setup(mut frame_codec: FrameCodec<S>, role: Role, config: WebSocketConfig) -> Self {
+        frame_codec
+            .decoder_mut()
+            .set_unmask(matches!(role, Role::Server));
+        frame_codec
+            .decoder_mut()
+            .set_accept_unmasked(config.accept_unmasked_frames);
+        frame_codec
+            .decoder_mut()
+            .set_max_frame_size(config.max_frame_size);
+
         Self {
             role,
             frame_codec,
@@ -180,8 +178,7 @@ where
             .decoder_mut()
             .set_max_frame_size(self.config.max_frame_size);
         self.frame_codec
-            .framed_write_mut()
-            .set_backpressure(self.config.write_buffer_size);
+            .set_write_limit(self.config.write_buffer_size);
     }
 
     /// Reads the configuration.

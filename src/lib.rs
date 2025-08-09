@@ -12,7 +12,6 @@
 #[cfg(feature = "handshake")]
 pub mod client;
 pub mod error;
-mod framed;
 #[cfg(feature = "handshake")]
 pub mod handshake;
 pub mod protocol;

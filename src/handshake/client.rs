@@ -1,14 +1,14 @@
 //! Client handshake.
 
-use std::fmt::Write;
+use std::io::Write as _;
 
 use bytes::{Buf, BytesMut};
 use http::{
     HeaderMap, Request as HttpRequest, Response as HttpResponse, StatusCode, header::HeaderName,
 };
 use httparse::Status;
-use monoio::io::{AsyncReadRent, AsyncWriteRent, sink::Sink};
-use monoio_codec::{Decoded, Decoder, Encoder};
+use monoio::io::{AsyncReadRent, AsyncWriteRent, AsyncWriteRentExt, stream::Stream};
+use monoio_codec::{Decoded, Decoder, FramedRead};
 
 use super::{
     derive_accept_key,
@@ -17,10 +17,7 @@ use super::{
 use crate::{
     client::uri_mode,
     error::{Error, ProtocolError, Result, SubProtocolError, UrlError},
-    protocol::{
-        Role, WebSocket, WebSocketConfig,
-        frame::codec::{FrameCodec, FrameDecoder, FrameEncoder},
-    },
+    protocol::{Role, WebSocket, WebSocketConfig},
 };
 
 /// Client request type.
@@ -57,18 +54,14 @@ where
         subprotocols,
     };
 
-    let config = config.unwrap_or_default();
-    let mut framed = FrameCodec::new(
-        stream,
-        FrameDecoder::new(config.max_frame_size, false, config.accept_unmasked_frames),
-        FrameEncoder,
-        config.write_buffer_size,
-    );
+    let mut framed = FramedRead::new(stream, ResponseDecoder);
 
-    framed.send_with(&mut RequestEncoder, request).await?;
-    framed.flush().await?;
+    let buf = generate_request(request)?;
+    let (res, _) = framed.get_mut().write_all(buf).await;
+    res?;
+    framed.get_mut().flush().await?;
 
-    match framed.next_with(&mut ResponseDecoder).await {
+    match framed.next().await {
         Some(Ok((size, resp))) => {
             framed.read_buffer_mut().advance(size);
             let tail = framed.read_buffer_mut().to_vec();
@@ -82,7 +75,7 @@ where
                 Err(e) => return Err(e),
             };
 
-            let ws = WebSocket::from_frame_codec(framed, Role::Client, config);
+            let ws = WebSocket::from_framed_read(framed, Role::Client, config);
             Ok((ws, resp))
         }
 
@@ -106,95 +99,90 @@ const WEBSOCKET_HEADERS: [&str; 5] = [
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RequestEncoder;
 
-impl Encoder<Request> for RequestEncoder {
-    type Error = Error;
+fn generate_request(mut req: Request) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
 
-    fn encode(&mut self, mut req: Request, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        // XXX
-        dst.reserve(256 + req.headers().len() * 35);
+    write!(
+        buf,
+        "GET {path} {version:?}\r\n",
+        path = req
+            .uri()
+            .path_and_query()
+            .ok_or(Error::Url(UrlError::NoPathOrQuery))?
+            .as_str(),
+        version = req.version()
+    )
+    .unwrap();
 
-        write!(
-            dst,
-            "GET {path} {version:?}\r\n",
-            path = req
-                .uri()
-                .path_and_query()
-                .ok_or(Error::Url(UrlError::NoPathOrQuery))?
-                .as_str(),
-            version = req.version()
-        )
-        .unwrap();
+    // We must check that all necessary headers for a valid request are present. Note that we
+    // have to deal with the fact that some apps seem to have a case-sensitive check for
+    // headers which is not correct and should not considered the correct behavior, but
+    // it seems like some apps ignore it. `http` by default writes all headers in
+    // lower-case which is fine (and does not violate the RFC) but some servers seem to
+    // be poorely written and ignore RFC.
+    //
+    // See similar problem in `hyper`: https://github.com/hyperium/hyper/issues/1492
+    let headers = req.headers_mut();
+    for &header in &WEBSOCKET_HEADERS {
+        let value = headers.remove(header).ok_or_else(|| {
+            Error::Protocol(ProtocolError::InvalidHeader(
+                HeaderName::from_bytes(header.as_bytes()).unwrap(),
+            ))
+        })?;
 
-        // We must check that all necessary headers for a valid request are present. Note that we
-        // have to deal with the fact that some apps seem to have a case-sensitive check for
-        // headers which is not correct and should not considered the correct behavior, but
-        // it seems like some apps ignore it. `http` by default writes all headers in
-        // lower-case which is fine (and does not violate the RFC) but some servers seem to
-        // be poorely written and ignore RFC.
-        //
-        // See similar problem in `hyper`: https://github.com/hyperium/hyper/issues/1492
-        let headers = req.headers_mut();
-        for &header in &WEBSOCKET_HEADERS {
-            let value = headers.remove(header).ok_or_else(|| {
-                Error::Protocol(ProtocolError::InvalidHeader(
-                    HeaderName::from_bytes(header.as_bytes()).unwrap(),
-                ))
-            })?;
+        let value = value.to_str().map_err(|err| {
+            Error::Utf8(format!(
+                "{err} for header name '{header}' with value: {value:?}"
+            ))
+        })?;
 
-            let value = value.to_str().map_err(|err| {
-                Error::Utf8(format!(
-                    "{err} for header name '{header}' with value: {value:?}"
-                ))
-            })?;
-
-            dst.extend_from_slice(header.as_ref());
-            dst.extend_from_slice(b": ");
-            dst.extend_from_slice(value.as_bytes());
-            dst.extend_from_slice(b"\r\n");
-        }
-
-        // Now we must ensure that the headers that we've written once are not anymore present in
-        // the map. If they do, then the request is invalid (some headers are duplicated
-        // there for some reason).
-        let insensitive: Vec<String> = WEBSOCKET_HEADERS
-            .iter()
-            .map(|h| h.to_ascii_lowercase())
-            .collect();
-
-        for (k, v) in headers {
-            let mut name = k.as_str();
-
-            // We have already written the necessary headers once (above) and removed them from the
-            // map. If we encounter them again, then the request is considered invalid
-            // and error is returned. Note that we can't use `.contains()`, since `&str`
-            // does not coerce to `&String` in Rust.
-            if insensitive.iter().any(|x| x == name) {
-                return Err(Error::Protocol(ProtocolError::InvalidHeader(k.clone())));
-            }
-
-            // Relates to the issue of some servers treating headers in a case-sensitive way, please
-            // see: https://github.com/snapview/tungstenite-rs/pull/119 (original fix of the problem)
-            if name == "sec-websocket-protocol" {
-                name = "Sec-WebSocket-Protocol";
-            }
-
-            if name == "origin" {
-                name = "Origin";
-            }
-
-            let value = v.to_str().map_err(|err| {
-                Error::Utf8(format!("{err} for header name '{name}' with value: {v:?}"))
-            })?;
-
-            dst.extend_from_slice(name.as_ref());
-            dst.extend_from_slice(b": ");
-            dst.extend_from_slice(value.as_bytes());
-            dst.extend_from_slice(b"\r\n");
-        }
-
-        dst.extend_from_slice(b"\r\n");
-        Ok(())
+        buf.extend_from_slice(header.as_ref());
+        buf.extend_from_slice(b": ");
+        buf.extend_from_slice(value.as_bytes());
+        buf.extend_from_slice(b"\r\n");
     }
+
+    // Now we must ensure that the headers that we've written once are not anymore present in
+    // the map. If they do, then the request is invalid (some headers are duplicated
+    // there for some reason).
+    let insensitive: Vec<String> = WEBSOCKET_HEADERS
+        .iter()
+        .map(|h| h.to_ascii_lowercase())
+        .collect();
+
+    for (k, v) in headers {
+        let mut name = k.as_str();
+
+        // We have already written the necessary headers once (above) and removed them from the
+        // map. If we encounter them again, then the request is considered invalid
+        // and error is returned. Note that we can't use `.contains()`, since `&str`
+        // does not coerce to `&String` in Rust.
+        if insensitive.iter().any(|x| x == name) {
+            return Err(Error::Protocol(ProtocolError::InvalidHeader(k.clone())));
+        }
+
+        // Relates to the issue of some servers treating headers in a case-sensitive way, please
+        // see: https://github.com/snapview/tungstenite-rs/pull/119 (original fix of the problem)
+        if name == "sec-websocket-protocol" {
+            name = "Sec-WebSocket-Protocol";
+        }
+
+        if name == "origin" {
+            name = "Origin";
+        }
+
+        let value = v.to_str().map_err(|err| {
+            Error::Utf8(format!("{err} for header name '{name}' with value: {v:?}"))
+        })?;
+
+        buf.extend_from_slice(name.as_ref());
+        buf.extend_from_slice(b": ");
+        buf.extend_from_slice(value.as_bytes());
+        buf.extend_from_slice(b"\r\n");
+    }
+
+    buf.extend_from_slice(b"\r\n");
+    Ok(buf)
 }
 
 fn get_websocket_key(req: &Request) -> Result<&str> {
@@ -361,16 +349,13 @@ impl VerifyData {
             ));
         }
 
-        if let Some(returned_subprotocol) = headers.get("Sec-WebSocket-Protocol") {
-            if let Some(accepted_subprotocols) = &self.subprotocols {
-                if !accepted_subprotocols.contains(&returned_subprotocol.to_str()?.to_string()) {
-                    return Err(Error::Protocol(
-                        ProtocolError::SecWebSocketSubProtocolError(
-                            SubProtocolError::InvalidSubProtocol,
-                        ),
-                    ));
-                }
-            }
+        if let Some(returned_subprotocol) = headers.get("Sec-WebSocket-Protocol")
+            && let Some(accepted_subprotocols) = &self.subprotocols
+            && !accepted_subprotocols.contains(&returned_subprotocol.to_str()?.to_string())
+        {
+            return Err(Error::Protocol(
+                ProtocolError::SecWebSocketSubProtocolError(SubProtocolError::InvalidSubProtocol),
+            ));
         }
 
         Ok(resp)
@@ -412,17 +397,16 @@ mod tests {
         .into_bytes()
     }
 
-    fn generate_request(request: Request) -> Result<(BytesMut, String)> {
+    fn generate_request_and_key(request: Request) -> Result<(Vec<u8>, String)> {
         let key = get_websocket_key(&request)?.to_owned();
-        let mut buf = BytesMut::new();
-        RequestEncoder.encode(request, &mut buf)?;
+        let buf = generate_request(request)?;
         Ok((buf, key))
     }
 
     #[test]
     fn request_formatting() {
         let request = "ws://localhost/getCaseCount".into_client_request().unwrap();
-        let (request, key) = generate_request(request).unwrap();
+        let (request, key) = generate_request_and_key(request).unwrap();
         let correct = construct_expected("localhost", &key);
         assert_eq!(&request[..], &correct[..]);
     }
@@ -432,7 +416,7 @@ mod tests {
         let request = "wss://localhost:9001/getCaseCount"
             .into_client_request()
             .unwrap();
-        let (request, key) = generate_request(request).unwrap();
+        let (request, key) = generate_request_and_key(request).unwrap();
         let correct = construct_expected("localhost:9001", &key);
         assert_eq!(&request[..], &correct[..]);
     }
@@ -442,7 +426,7 @@ mod tests {
         let request = "wss://user:pass@localhost:9001/getCaseCount"
             .into_client_request()
             .unwrap();
-        let (request, key) = generate_request(request).unwrap();
+        let (request, key) = generate_request_and_key(request).unwrap();
         let correct = construct_expected("localhost:9001", &key);
         assert_eq!(&request[..], &correct[..]);
     }
@@ -464,6 +448,6 @@ mod tests {
     #[test]
     fn invalid_custom_request() {
         let request = http::Request::builder().method("GET").body(()).unwrap();
-        assert!(generate_request(request).is_err());
+        assert!(generate_request_and_key(request).is_err());
     }
 }

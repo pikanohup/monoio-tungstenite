@@ -1,14 +1,14 @@
 //! Server handshake.
 
-use std::fmt::Write;
+use std::io::Write as _;
 
 use bytes::BytesMut;
 use http::{
     HeaderMap, Request as HttpRequest, Response as HttpResponse, StatusCode, response::Builder,
 };
 use httparse::Status;
-use monoio::io::{AsyncReadRent, AsyncWriteRent, sink::Sink};
-use monoio_codec::{Decoded, Decoder, Encoder};
+use monoio::io::{AsyncReadRent, AsyncWriteRent, AsyncWriteRentExt, stream::Stream};
+use monoio_codec::{Decoded, Decoder, FramedRead};
 
 use super::{
     derive_accept_key,
@@ -16,10 +16,7 @@ use super::{
 };
 use crate::{
     error::{Error, ProtocolError, Result},
-    protocol::{
-        Role, WebSocket, WebSocketConfig,
-        frame::codec::{FrameCodec, FrameDecoder, FrameEncoder},
-    },
+    protocol::{Role, WebSocket, WebSocketConfig},
 };
 
 /// Server request type.
@@ -41,15 +38,9 @@ where
     S: AsyncReadRent + AsyncWriteRent,
     C: Callback,
 {
-    let config = config.unwrap_or_default();
-    let mut framed = FrameCodec::new(
-        stream,
-        FrameDecoder::new(config.max_frame_size, true, config.accept_unmasked_frames),
-        FrameEncoder,
-        config.write_buffer_size,
-    );
+    let mut framed = FramedRead::new(stream, RequestDecoder);
 
-    match framed.next_with(&mut RequestDecoder).await {
+    match framed.next().await {
         Some(Ok((size, req))) => {
             if framed.read_buffer().len() != size {
                 return Err(Error::Protocol(ProtocolError::JunkAfterRequest));
@@ -58,11 +49,13 @@ where
             let resp = create_response(&req)?;
             match callback.on_request(&req, resp) {
                 Ok(resp) => {
-                    framed.send_with(&mut ResponseHeaderEncoder, &resp).await?;
-                    framed.flush().await?;
+                    let buf = generate_response(&resp)?;
+                    let (res, _) = framed.get_mut().write_all(buf).await;
+                    res?;
+                    framed.get_mut().flush().await?;
 
                     framed.read_buffer_mut().clear();
-                    Ok(WebSocket::from_frame_codec(framed, Role::Server, config))
+                    Ok(WebSocket::from_framed_read(framed, Role::Server, config))
                 }
 
                 Err(resp) => {
@@ -70,13 +63,16 @@ where
                         return Err(Error::Protocol(ProtocolError::CustomResponseSuccessful));
                     }
 
-                    framed.send_with(&mut ResponseHeaderEncoder, &resp).await?;
+                    let buf = generate_response(&resp)?;
+                    let (res, _) = framed.get_mut().write_all(buf).await;
+                    res?;
+
                     if let Some(body) = resp.body() {
-                        framed
-                            .send_with(&mut ResponseBodyEncoder, body.as_bytes())
-                            .await?;
+                        let (res, _) = framed.get_mut().write_all(body.as_bytes().to_vec()).await;
+                        res?;
                     }
-                    framed.flush().await?;
+
+                    framed.get_mut().flush().await?;
 
                     let (parts, body) = resp.into_parts();
                     let body = body.map(|b| b.as_bytes().to_vec());
@@ -168,48 +164,26 @@ pub fn create_response_with_body<T1, T2>(
     Ok(create_parts(request)?.body(generate_body())?)
 }
 
-/// Encoder for HTTP response headers.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ResponseHeaderEncoder;
+fn generate_response<T>(resp: &HttpResponse<T>) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
 
-impl<T> Encoder<&HttpResponse<T>> for ResponseHeaderEncoder {
-    type Error = Error;
+    write!(
+        buf,
+        "{version:?} {status}\r\n",
+        version = resp.version(),
+        status = resp.status()
+    )
+    .unwrap();
 
-    fn encode(&mut self, resp: &HttpResponse<T>, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        // XXX
-        dst.reserve(256 + resp.headers().len() * 35);
-
-        write!(
-            dst,
-            "{version:?} {status}\r\n",
-            version = resp.version(),
-            status = resp.status()
-        )
-        .unwrap();
-
-        for (k, v) in resp.headers() {
-            dst.extend_from_slice(k.as_ref());
-            dst.extend_from_slice(b": ");
-            dst.extend_from_slice(v.as_ref());
-            dst.extend_from_slice(b"\r\n");
-        }
-
-        dst.extend_from_slice(b"\r\n");
-        Ok(())
+    for (k, v) in resp.headers() {
+        buf.extend_from_slice(k.as_ref());
+        buf.extend_from_slice(b": ");
+        buf.extend_from_slice(v.as_ref());
+        buf.extend_from_slice(b"\r\n");
     }
-}
 
-/// Encoder for HTTP response body.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ResponseBodyEncoder;
-
-impl Encoder<&[u8]> for ResponseBodyEncoder {
-    type Error = Error;
-
-    fn encode(&mut self, body: &[u8], dst: &mut BytesMut) -> Result<(), Self::Error> {
-        dst.extend_from_slice(body);
-        Ok(())
-    }
+    buf.extend_from_slice(b"\r\n");
+    Ok(buf)
 }
 
 /// Decoder for Request.
