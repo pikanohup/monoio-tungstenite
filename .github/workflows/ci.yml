@@ -23,6 +23,13 @@ jobs:
           components: clippy
       - run: cargo clippy --all --tests --all-features -- -D warnings
 
+  deny:
+    name: Deny check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
   test:
     name: Test
     runs-on: ubuntu-latest
