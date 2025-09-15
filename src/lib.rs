@@ -26,6 +26,11 @@ pub mod tls;
 
 // re-export bytes since used in `Message` API.
 pub use bytes::Bytes;
+#[cfg(all(
+    any(feature = "native-tls", feature = "rustls-tls"),
+    feature = "handshake"
+))]
+pub use client::connect_tls_with_config;
 pub use error::{Error, Result};
 #[cfg(feature = "handshake")]
 pub use http;
@@ -38,7 +43,7 @@ pub use stream::MaybeTlsStream;
 pub use tls::{Connector, client_tls, client_tls_with_config};
 #[cfg(feature = "handshake")]
 pub use {
-    client::{ClientRequestBuilder, client, connect},
+    client::{ClientRequestBuilder, client, client_with_config, connect, connect_with_config},
     handshake::client::client_handshake,
     handshake::server::server_handshake,
     server::{accept, accept_hdr, accept_hdr_with_config, accept_with_config},
