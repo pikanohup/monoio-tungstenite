@@ -25,3 +25,6 @@ wildcards = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+
+[advisories]
+unmaintained = "workspace"
