@@ -1,6 +1,12 @@
 //! TLS support for WebSocket connections.
 
 use monoio::io::{AsyncReadRent, AsyncWriteRent};
+// re-export `monoio_native_tls::TlsConnector` for users to create their own TLS connectors.
+#[cfg(feature = "native-tls")]
+pub use monoio_native_tls::TlsConnector as NativeTlsConnector;
+// re-export `monoio_rustls::TlsConnector` for users to create their own TLS connectors.
+#[cfg(feature = "rustls-tls")]
+pub use monoio_rustls::TlsConnector as RustlsConnector;
 
 use crate::{
     client::{IntoClientRequest, client_with_config, uri_mode},
@@ -20,10 +26,10 @@ pub enum Connector {
     Plain,
     /// `native-tls` TLS connector.
     #[cfg(feature = "native-tls")]
-    NativeTls(native_tls::TlsConnector),
+    NativeTls(NativeTlsConnector),
     /// `rustls` TLS connector.
     #[cfg(feature = "rustls-tls")]
-    Rustls(std::sync::Arc<rustls::ClientConfig>),
+    Rustls(RustlsConnector),
 }
 
 mod encryption {
@@ -49,8 +55,7 @@ mod encryption {
     #[cfg(feature = "native-tls")]
     pub mod native_tls {
         use monoio::io::{AsyncReadRent, AsyncWriteRent};
-        use monoio_native_tls::TlsConnector as MonoioTlsConnector;
-        use native_tls::TlsConnector;
+        use monoio_native_tls::TlsConnector;
 
         use crate::{
             Error, Result,
@@ -70,10 +75,14 @@ mod encryption {
             match mode {
                 Mode::Plain => Ok(MaybeTlsStream::Plain(socket)),
                 Mode::Tls => {
-                    let connector = tls_connector
-                        .map_or_else(TlsConnector::new, Ok)
-                        .map_err(|e| TlsError::Native(Box::new(e.into())))?;
-                    let connector = MonoioTlsConnector::from(connector);
+                    let connector = match tls_connector {
+                        Some(connector) => connector,
+                        None => {
+                            let connector = native_tls::TlsConnector::new()
+                                .map_err(|e| TlsError::Native(Box::new(e.into())))?;
+                            TlsConnector::from(connector)
+                        }
+                    };
 
                     match connector.connect(domain, socket).await {
                         Err(e) => Err(Error::Tls(e.into())),
@@ -86,10 +95,8 @@ mod encryption {
 
     #[cfg(feature = "rustls-tls")]
     pub mod rustls {
-        use std::sync::Arc;
-
         use monoio::io::{AsyncReadRent, AsyncWriteRent};
-        use monoio_rustls::TlsConnector as MonoioTlsConnector;
+        use monoio_rustls::TlsConnector;
         use rustls::{ClientConfig, RootCertStore};
         use rustls_pki_types::ServerName;
 
@@ -103,16 +110,18 @@ mod encryption {
             socket: S,
             domain: &str,
             mode: Mode,
-            tls_connector: Option<Arc<ClientConfig>>,
+            tls_connector: Option<TlsConnector>,
         ) -> Result<MaybeTlsStream<S>>
         where
             S: AsyncReadRent + AsyncWriteRent,
         {
             match mode {
                 Mode::Plain => Ok(MaybeTlsStream::Plain(socket)),
+
                 Mode::Tls => {
-                    let config = match tls_connector {
-                        Some(config) => config,
+                    let connector = match tls_connector {
+                        Some(connector) => connector,
+
                         None => {
                             #[allow(unused_mut)]
                             let mut root_store = RootCertStore::empty();
@@ -139,7 +148,7 @@ mod encryption {
                                 root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
                             }
 
-                            Arc::new(
+                            TlsConnector::from(
                                 ClientConfig::builder()
                                     .with_root_certificates(root_store)
                                     .with_no_client_auth(),
@@ -150,7 +159,6 @@ mod encryption {
                     let domain = ServerName::try_from(domain)
                         .map_err(|_| TlsError::InvalidDnsName)?
                         .to_owned();
-                    let connector = MonoioTlsConnector::from(config);
 
                     match connector.connect(domain, socket).await {
                         Err(e) => Err(Error::Tls(e.into())),

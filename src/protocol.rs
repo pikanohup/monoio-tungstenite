@@ -8,4 +8,4 @@ pub use frame::CloseFrame;
 pub use message::Message;
 
 mod websocket;
-pub use websocket::{Role, WebSocket, WebSocketConfig};
+pub use websocket::{FramedRead, Role, WebSocket, WebSocketConfig};

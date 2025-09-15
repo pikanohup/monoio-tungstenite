@@ -1,5 +1,5 @@
 use monoio::io::{AsyncReadRent, AsyncWriteRent, sink::Sink, stream::Stream};
-// re-export FramedRead since it is used in `WebSocket::from_framed_read`
+// re-export `FramedRead` since it is used in `WebSocket::from_framed_read`.
 pub use monoio_codec::FramedRead;
 
 use crate::{
