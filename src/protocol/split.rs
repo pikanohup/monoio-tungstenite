@@ -27,12 +27,14 @@ use crate::{
     error::{Error, ProtocolError, Result},
     protocol::{
         frame::{
-            CloseFrame, Frame, Utf8Bytes,
+            CloseFrame, Frame,
             codec::{FrameDecoder, FrameEncoder},
-            coding::{CloseCode, Control as OpCtl, Data as OpData, OpCode},
         },
-        message::{IncompleteMessage, IncompleteMessageType, Message},
-        websocket::{CheckConnectionReset, Role, WebSocketConfig, WebSocketState, check_max_size},
+        message::{IncompleteMessage, Message},
+        websocket::{
+            CheckConnectionReset, Role, WebSocketConfig, WebSocketState, handle_eof, handle_frame,
+            message_into_frame, validate_frame,
+        },
     },
 };
 
@@ -166,157 +168,18 @@ impl<R: AsyncReadRent> WebSocketReadHalf<R> {
                     return Err(Error::Protocol(ProtocolError::ReceivedAfterClosing));
                 }
 
-                {
-                    let hdr = frame.header();
-                    if hdr.rsv1 || hdr.rsv2 || hdr.rsv3 {
-                        return Err(Error::Protocol(ProtocolError::NonZeroReservedBits));
-                    }
-                }
+                validate_frame(self.role, &frame)?;
 
-                if self.role == Role::Client && frame.is_masked() {
-                    return Err(Error::Protocol(ProtocolError::MaskedFrameFromServer));
-                }
-
-                self.handle_frame(frame)
+                let mut shared = self.shared.borrow_mut();
+                handle_frame(
+                    &mut shared.state,
+                    &mut self.incomplete,
+                    self.config.max_message_size,
+                    frame,
+                )
             }
 
-            None => {
-                let old_state = self.shared.borrow().state;
-                self.shared.borrow_mut().state = WebSocketState::Terminated;
-                match old_state {
-                    WebSocketState::ClosedByPeer | WebSocketState::CloseAcknowledged => {
-                        Err(Error::ConnectionClosed)
-                    }
-                    _ => Err(Error::Protocol(ProtocolError::ResetWithoutClosingHandshake)),
-                }
-            }
-        }
-    }
-
-    fn handle_frame(&mut self, frame: Frame) -> Result<(Option<Message>, Option<Frame>)> {
-        match frame.header().opcode {
-            OpCode::Control(ctl) => {
-                match ctl {
-                    _ if !frame.header().is_final => {
-                        Err(Error::Protocol(ProtocolError::FragmentedControlFrame))
-                    }
-
-                    _ if frame.payload().len() > 125 => {
-                        Err(Error::Protocol(ProtocolError::ControlFrameTooBig))
-                    }
-
-                    OpCtl::Close => {
-                        let (msg, reply) = self.do_close(frame.into_close()?);
-                        Ok((msg.map(Message::Close), reply))
-                    }
-
-                    OpCtl::Reserved(i) => {
-                        Err(Error::Protocol(ProtocolError::UnknownControlFrameType(i)))
-                    }
-
-                    OpCtl::Ping => {
-                        let data = frame.into_payload();
-                        let reply = self
-                            .shared
-                            .borrow()
-                            .state
-                            .is_active()
-                            .then(|| Frame::pong(data.clone()));
-                        Ok((Some(Message::Ping(data)), reply))
-                    }
-
-                    OpCtl::Pong => Ok((Some(Message::Pong(frame.into_payload())), None)),
-                }
-            }
-
-            OpCode::Data(data) => {
-                let fin = frame.header().is_final;
-
-                let msg = match data {
-                    OpData::Continue => {
-                        if let Some(ref mut msg) = self.incomplete {
-                            msg.extend(frame.into_payload(), self.config.max_message_size)?;
-                        } else {
-                            return Err(Error::Protocol(ProtocolError::UnexpectedContinueFrame));
-                        }
-
-                        if fin {
-                            Ok(Some(self.incomplete.take().unwrap().complete()?))
-                        } else {
-                            Ok(None)
-                        }
-                    }
-
-                    c if self.incomplete.is_some() => {
-                        Err(Error::Protocol(ProtocolError::ExpectedFragment(c)))
-                    }
-
-                    OpData::Text if fin => {
-                        check_max_size(frame.payload().len(), self.config.max_message_size)?;
-                        Ok(Some(Message::Text(frame.into_text()?)))
-                    }
-
-                    OpData::Binary if fin => {
-                        check_max_size(frame.payload().len(), self.config.max_message_size)?;
-                        Ok(Some(Message::Binary(frame.into_payload())))
-                    }
-
-                    OpData::Text | OpData::Binary => {
-                        let message_type = match data {
-                            OpData::Text => IncompleteMessageType::Text,
-                            OpData::Binary => IncompleteMessageType::Binary,
-                            _ => panic!("Bug: message is not text nor binary"),
-                        };
-
-                        let mut incomplete = IncompleteMessage::new(message_type);
-                        incomplete.extend(frame.into_payload(), self.config.max_message_size)?;
-                        self.incomplete = Some(incomplete);
-
-                        Ok(None)
-                    }
-
-                    OpData::Reserved(i) => {
-                        Err(Error::Protocol(ProtocolError::UnknownDataFrameType(i)))
-                    }
-                }?;
-
-                Ok((msg, None))
-            }
-        }
-    }
-
-    fn do_close(
-        &mut self,
-        close: Option<CloseFrame>,
-    ) -> (Option<Option<CloseFrame>>, Option<Frame>) {
-        let mut shared = self.shared.borrow_mut();
-        match shared.state {
-            WebSocketState::Active => {
-                shared.state = WebSocketState::ClosedByPeer;
-
-                let close = close.map(|frame| {
-                    if !frame.code.is_allowed() {
-                        CloseFrame {
-                            code: CloseCode::Protocol,
-                            reason: Utf8Bytes::from_static("Protocol violation"),
-                        }
-                    } else {
-                        frame
-                    }
-                });
-
-                let reply = Frame::close(close.clone());
-                (Some(close), Some(reply))
-            }
-
-            WebSocketState::ClosedByPeer | WebSocketState::CloseAcknowledged => (None, None),
-
-            WebSocketState::ClosedByUs => {
-                shared.state = WebSocketState::CloseAcknowledged;
-                (Some(close), None)
-            }
-
-            WebSocketState::Terminated => unreachable!(),
+            None => Err(handle_eof(&mut self.shared.borrow_mut().state)),
         }
     }
 }
@@ -364,13 +227,9 @@ impl<W: AsyncWriteRent> WebSocketWriteHalf<W> {
             }
         }
 
-        let frame = match message {
-            Message::Text(data) => Frame::message(data, OpCode::Data(OpData::Text), true),
-            Message::Binary(data) => Frame::message(data, OpCode::Data(OpData::Binary), true),
-            Message::Ping(data) => Frame::ping(data),
-            Message::Pong(data) => Frame::pong(data),
-            Message::Close(code) => return self.close(code).await,
-            Message::Frame(f) => f,
+        let frame = match message_into_frame(message) {
+            Ok(frame) => frame,
+            Err(code) => return self.close(code).await,
         };
 
         self.write_frame(frame).await?;
