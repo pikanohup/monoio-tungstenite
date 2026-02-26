@@ -34,7 +34,7 @@ pub use client::connect_tls_with_config;
 pub use error::{Error, Result};
 #[cfg(feature = "handshake")]
 pub use http;
-pub use protocol::{Message, WebSocket, frame::Utf8Bytes};
+pub use protocol::{Message, WebSocket, WebSocketReadHalf, WebSocketWriteHalf, frame::Utf8Bytes};
 pub use stream::MaybeTlsStream;
 #[cfg(all(
     any(feature = "native-tls", feature = "rustls-tls"),

@@ -1,4 +1,7 @@
-use monoio::io::{AsyncReadRent, AsyncWriteRent, sink::Sink, stream::Stream};
+use monoio::io::{
+    AsyncReadRent, AsyncWriteRent, OwnedReadHalf, OwnedWriteHalf, Split, Splitable, sink::Sink,
+    stream::Stream,
+};
 // re-export `FramedRead` since it is used in `WebSocket::from_framed_read`.
 pub use monoio_codec::FramedRead;
 
@@ -11,6 +14,7 @@ use crate::{
             coding::{CloseCode, Control as OpCtl, Data as OpData, OpCode},
         },
         message::{IncompleteMessage, IncompleteMessageType, Message},
+        split::{WebSocketReadHalf, WebSocketWriteHalf, split_inner},
     },
 };
 
@@ -199,6 +203,70 @@ where
     /// Consumes the WebSocket and returns the underlying stream.
     pub fn into_inner(self) -> S {
         self.frame_codec.into_inner()
+    }
+
+    /// Splits the WebSocket into independent read and write halves.
+    ///
+    /// This allows concurrent reading and writing on the WebSocket connection.
+    /// The underlying stream `S` is split using [`monoio::io::Splitable::into_split`].
+    ///
+    /// # Auto-Pong Behavior
+    ///
+    /// In split mode, Pong replies to received Pings are queued by the read half and
+    /// sent by the write half on the next [`write`](WebSocketWriteHalf::write) or
+    /// [`flush`](WebSocketWriteHalf::flush) call, rather than being sent immediately.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let (mut read_half, mut write_half) = websocket.into_split();
+    ///
+    /// // Read and write can now be used concurrently
+    /// monoio::join!(
+    ///     async {
+    ///         while let Some(Ok(msg)) = read_half.next().await {
+    ///             println!("Received: {msg}");
+    ///         }
+    ///     },
+    ///     async {
+    ///         write_half.write(Message::Text("hello".into())).await.unwrap();
+    ///         write_half.flush().await.unwrap();
+    ///     },
+    /// );
+    /// ```
+    pub fn into_split(
+        self,
+    ) -> (
+        WebSocketReadHalf<OwnedReadHalf<S>>,
+        WebSocketWriteHalf<OwnedWriteHalf<S>>,
+    )
+    where
+        S: Split,
+    {
+        let WebSocket {
+            role,
+            frame_codec,
+            state,
+            incomplete,
+            config,
+        } = self;
+
+        let (io, decoder, read_buf, write_buf, write_limit) = frame_codec.into_parts();
+        let (read_io, write_io) = io.into_split();
+
+        let mut frame_reader = FramedRead::new(read_io, decoder);
+        *frame_reader.read_buffer_mut() = read_buf;
+
+        split_inner(
+            role,
+            config,
+            state,
+            incomplete,
+            frame_reader,
+            write_io,
+            write_buf,
+            write_limit,
+        )
     }
 
     /// Checks if it is possible to read messages.
@@ -540,7 +608,7 @@ where
 }
 
 #[inline]
-fn check_max_size(size: usize, max_size: Option<usize>) -> Result<()> {
+pub(crate) fn check_max_size(size: usize, max_size: Option<usize>) -> Result<()> {
     if let Some(max_size) = max_size
         && size > max_size
     {
@@ -554,7 +622,7 @@ fn check_max_size(size: usize, max_size: Option<usize>) -> Result<()> {
 }
 
 /// Translates "Connection reset by peer" into `ConnectionClosed` if appropriate.
-trait CheckConnectionReset {
+pub(crate) trait CheckConnectionReset {
     fn check_connection_reset(self, state: WebSocketState) -> Self;
 }
 
@@ -575,7 +643,7 @@ impl<T> CheckConnectionReset for Result<T> {
 
 /// The current connection state.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-enum WebSocketState {
+pub(crate) enum WebSocketState {
     /// The connection is active.
     Active,
     /// We initiated a close handshake.
@@ -590,19 +658,19 @@ enum WebSocketState {
 
 impl WebSocketState {
     /// Tells if we're allowed to process normal messages.
-    fn is_active(self) -> bool {
+    pub(crate) fn is_active(self) -> bool {
         matches!(self, WebSocketState::Active)
     }
 
     /// Tells if we should process incoming data. Note that if we send a close frame
     /// but the remote hasn't confirmed, they might have sent data before they receive our
     /// close frame, so we should still pass those to client code, hence ClosedByUs is valid.
-    fn can_read(self) -> bool {
+    pub(crate) fn can_read(self) -> bool {
         matches!(self, WebSocketState::Active | WebSocketState::ClosedByUs)
     }
 
     /// Checks if the state is active, return error if not.
-    fn check_not_terminated(self) -> Result<()> {
+    pub(crate) fn check_not_terminated(self) -> Result<()> {
         match self {
             WebSocketState::Terminated => Err(Error::AlreadyClosed),
             _ => Ok(()),
@@ -707,6 +775,91 @@ mod tests {
 
         assert!(matches!(
             socket.read().await,
+            Err(Error::Capacity(CapacityError::MessageTooLong {
+                size: 3,
+                max_size: 2
+            }))
+        ));
+    }
+
+    // SAFETY: MockWrite's read and write operations are independent.
+    // Read delegates to the inner stream, and write is a no-op buffer.
+    unsafe impl<S> Split for MockWrite<S> {}
+
+    #[monoio::test]
+    async fn split_receive_messages() {
+        let incoming = [
+            0x89, 0x02, 0x01, 0x02, 0x8a, 0x01, 0x03, 0x01, 0x07, 0x48, 0x65, 0x6c, 0x6c, 0x6f,
+            0x2c, 0x20, 0x80, 0x06, 0x57, 0x6f, 0x72, 0x6c, 0x64, 0x21, 0x82, 0x03, 0x01, 0x02,
+            0x03,
+        ];
+        let socket = WebSocket::from_raw_socket(MockWrite(&incoming[..]), Role::Client, None);
+        let (mut read_half, _write_half) = socket.into_split();
+
+        assert_eq!(
+            read_half.read().await.unwrap(),
+            Message::Ping(vec![1, 2].into())
+        );
+        assert_eq!(
+            read_half.read().await.unwrap(),
+            Message::Pong(vec![3].into())
+        );
+        assert_eq!(
+            read_half.read().await.unwrap(),
+            Message::Text("Hello, World!".into())
+        );
+        assert_eq!(
+            read_half.read().await.unwrap(),
+            Message::Binary(vec![0x01, 0x02, 0x03].into())
+        );
+    }
+
+    #[monoio::test]
+    async fn split_ping_queues_pong() {
+        // A single Ping frame: opcode 0x89, length 2, payload [0x01, 0x02]
+        let incoming = [0x89, 0x02, 0x01, 0x02];
+        let socket = WebSocket::from_raw_socket(MockWrite(&incoming[..]), Role::Client, None);
+        let (mut read_half, mut write_half) = socket.into_split();
+
+        // Reading a Ping should queue a Pong.
+        assert_eq!(
+            read_half.read().await.unwrap(),
+            Message::Ping(vec![1, 2].into())
+        );
+
+        // The write half should be able to flush (which sends the queued pong).
+        assert!(write_half.flush().await.is_ok());
+    }
+
+    #[monoio::test]
+    async fn split_write_half_can_send() {
+        // No incoming data needed for write test.
+        let incoming: &[u8] = &[];
+        let socket = WebSocket::from_raw_socket(MockWrite(incoming), Role::Client, None);
+        let (_read_half, mut write_half) = socket.into_split();
+
+        assert!(write_half.can_write());
+        assert!(
+            write_half
+                .write(Message::Text("hello".into()))
+                .await
+                .is_ok()
+        );
+        assert!(write_half.flush().await.is_ok());
+    }
+
+    #[monoio::test]
+    async fn split_size_limiting() {
+        let incoming = [0x82, 0x03, 0x01, 0x02, 0x03];
+        let limit = WebSocketConfig {
+            max_message_size: Some(2),
+            ..WebSocketConfig::default()
+        };
+        let socket = WebSocket::from_raw_socket(MockWrite(&incoming[..]), Role::Client, Some(limit));
+        let (mut read_half, _write_half) = socket.into_split();
+
+        assert!(matches!(
+            read_half.read().await,
             Err(Error::Capacity(CapacityError::MessageTooLong {
                 size: 3,
                 max_size: 2

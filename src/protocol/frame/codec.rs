@@ -88,6 +88,16 @@ impl<IO> FrameCodec<IO> {
         self.inner.decoder_mut()
     }
 
+    /// Decomposes the `FrameCodec` into its component parts.
+    ///
+    /// Returns a tuple of `(IO, FrameDecoder, read_buffer, write_buffer, write_limit)`.
+    pub(crate) fn into_parts(mut self) -> (IO, FrameDecoder, BytesMut, BytesMut, usize) {
+        let read_buf = std::mem::take(self.inner.read_buffer_mut());
+        let decoder = self.inner.decoder_mut().clone();
+        let io = self.inner.into_inner();
+        (io, decoder, read_buf, self.write_buf, self.write_limit)
+    }
+
     /// Equivalent to [`Sink::send`] but with custom codec.
     pub async fn send_with<C: Encoder<Item>, Item>(
         &mut self,
