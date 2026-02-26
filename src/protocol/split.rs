@@ -3,6 +3,12 @@
 //! This module provides [`WebSocketReadHalf`] and [`WebSocketWriteHalf`] types that allow
 //! independent, concurrent reading and writing on a WebSocket connection.
 //!
+//! # Threading Model
+//!
+//! The split halves use `Rc<RefCell<>>` for shared state and are **not `Send`**. This is
+//! consistent with monoio's single-threaded, thread-per-core architecture. Both halves must
+//! be used on the same thread as the original [`WebSocket`](super::WebSocket).
+//!
 //! # Auto-Pong Behavior
 //!
 //! When using a non-split [`WebSocket`](super::WebSocket), received Ping frames automatically
